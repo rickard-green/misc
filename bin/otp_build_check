@@ -139,6 +139,11 @@ unset RELEASE_ROOT
 
 progress "Building OTP in $ERL_TOP"
 $MAKE || exit 1
+$ERL_TOP/bin/cerl -eval "erlang:halt()" || exit 1
+
+progress "Building debug OTP in $ERL_TOP"
+$MAKE TYPE=debug || exit 1
+$ERL_TOP/bin/cerl -debug -eval "erlang:halt()" || exit 1
 
 progress "Releasing OTP"
 $MAKE release || exit 1
