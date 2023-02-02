@@ -1,0 +1,240 @@
+#!/bin/sh
+#
+# %CopyrightBegin%
+#
+# Copyright Ericsson AB 2023. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# %CopyrightEnd%
+#
+
+#
+# Performs a lot of (but not always all) build checking that you want to do...
+#
+
+docs=yes
+dialyzer=yes
+tests=all
+
+have_printf=no
+
+print_error() {
+    if [ $have_printf = yes ]; then
+	printf "\033[31mERROR: %s\033[0m\n" "$1" 1>&2
+    else
+	echo "ERROR: $1" 1>&2
+    fi
+}
+
+progress() {
+    if [ $have_printf = yes ]; then
+	printf "\033[33m*** %s ***\033[0m\n" "$1" 1>&2
+    else
+	echo "*** $1 ***" 1>&2
+    fi
+}
+
+print_usage() {
+    echo "Usage:"
+    echo "  $0 [--help|-h] [--no-docs|-d] [--no-dialyzer|-y] [--no-tests|-n] [--tests|-t <App0> ... <AppN>]"
+    echo ""
+    echo "By default:"
+    echo " * configure will not be run if it has already been run from the top"
+    echo " * all applications will be built"
+    echo " * dialyzer will be run on all applications"
+    echo " * all documentation will be built and checked"
+    echo " * all tests will be built"
+}
+
+usage () {
+    print_error "$1"
+    print_usage
+    exit 1
+}
+
+fail () {
+    print_error "$1"
+    exit 1
+}
+
+type printf >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+    have_printf=yes
+fi
+
+[ "$ERL_TOP" != "" ] || fail "ERL_TOP needs to be set"
+
+cd "$ERL_TOP" 2>&1 >/dev/null || {
+    fail "Failed to change directory into $ERL_TOP"
+}
+
+[ -f "$ERL_TOP/OTP_VERSION" ] || fail "ERL_TOP not valid"
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        --help|-h)
+            print_usage
+            exit 0;;
+        --no-docs|-d)
+            docs=no;;
+        --no-dialyzer|-y)
+            dialyzer=no;;
+        --no-tests|-n)
+            tests=none;;
+        --tests|-t)
+            shift
+            while [ $# -gt 0 ]; do
+                case $1 in
+                    -*)
+                        break;;
+	            test_server|emulator|system|epmd)
+                        ;;
+	            *)
+                        [ -d "$ERL_TOP/lib/$1/test" ] || {
+                            fail "Invalid application: $1"
+                        }
+                        ;;
+                esac
+                tapps="$1 $tapps"
+                shift
+            done
+            [ "$tapps" != "" ] || usage "No test apps given"
+            tests="$tapps"
+            continue;;
+        *)
+            usage "Invalid option: $1"
+    esac
+    shift
+done
+
+[ -f "$ERL_TOP/make/config.status" ] || {
+    ./configure || exit 1
+}
+
+type gmake >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+    export MAKE="gmake"
+else
+    type make >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+	export MAKE="make"
+    fi
+fi
+
+target=`$MAKE target_configured` || fail "Failed to determine target directory"
+
+unset TESTROOT
+unset RELEASE_ROOT
+
+progress "Building OTP in $ERL_TOP"
+$MAKE || exit 1
+
+progress "Releasing OTP"
+$MAKE release || exit 1
+
+cd "$ERL_TOP/release/$target" 2>&1 >/dev/null || {
+    fail "Failed to change directory into release directory: $ERL_TOP/release/$target"
+}
+
+progress "Installing OTP"
+./Install -minimal `pwd` || fail "Failed to install release"
+
+cd "$ERL_TOP" 2>&1 >/dev/null || {
+    fail "Failed to change directory into $ERL_TOP"
+}
+
+export PATH="$ERL_TOP/release/$target/bin:$PATH"
+
+[ $docs = no ] || {
+    progress "Building OTP documentation"
+    $MAKE docs || exit 1
+    progress "Releasing OTP documentation"
+    $MAKE release_docs || exit 1
+    progress "Running xmllint on OTP documentation"
+    $MAKE xmllint || exit 1
+    progress "Running HTML check on OTP documentation"
+    ./scripts/otp_html_check "$ERL_TOP/release/$target/" doc/index.html || {
+        exit 1
+    }
+}
+
+[ $dialyzer = no ] || {
+    progress "Running dialyzer on OTP"
+    $MAKE dialyzer || exit 1
+}
+
+[ "$tests" = none ] || {
+    test_dir="$ERL_TOP/release/$target/test"
+    [ -d "$test_dir" ] || mkdir "$test_dir" 2>&1 >/dev/null || {
+        fail "Failed to create $test_dir directory"
+    }
+    if [ "$tests" = all ]; then
+        progress "Releasing all OTP tests"
+        ./otp_build tests "$test_dir"
+    else
+        for tapp in $tests; do
+            case $tapp in
+	        test_server)
+	            tapp_dir="$ERL_TOP/lib/test_server"
+	            if [ ! -d "$tapp_dir" ]; then
+		        tapp_dir="$ERL_TOP/lib/common_test/test_server"
+	            fi
+	            ;;
+	        emulator) tapp_dir="$ERL_TOP/erts/emulator/test";;
+	        system) tapp_dir="$ERL_TOP/erts/test";;
+	        epmd) tapp_dir="$ERL_TOP/erts/epmd/test";;
+	        *) tapp_dir="$ERL_TOP/lib/$tapp/test";;
+            esac
+            cd "$tapp_dir" 2>&1 >/dev/null || {
+                fail "Failed to change directory into $tapp_dir"
+            }
+            progress "Releasing $tapp tests"
+            $MAKE "TESTROOT=$test_dir" release_tests
+        done
+
+    fi
+
+    cd "$test_dir" 2>&1 >/dev/null || {
+        fail "Failed to change directory into $test_dir"
+    }
+
+    for dir in *; do
+
+        [ -d "$test_dir/$dir" ] || continue
+
+        progress "Building $dir tests"
+
+        cd "$test_dir/$dir" 2>&1 >/dev/null || {
+            fail "Failed to change directory into $test_dir/$dir"
+        }
+
+        if [ -f Emakefile ]; then
+            erl -noshell -eval 'case make:all() of error -> erlang:halt(1); _ -> init:stop() end.' || exit 1
+        else
+            erlc -I `erl -noshell -eval 'io:format("~ts",[code:lib_dir(common_test)]),init:stop()'`/include -I . *.erl || exit 1
+        fi
+
+    done
+
+    cd "$ERL_TOP" 2>&1 >/dev/null || {
+        fail "Failed to change directory into $ERL_TOP"
+    }
+}
+
+if [ $have_printf = yes ]; then
+    printf "\033[32m*** Success! ***\033[0m\n"
+else
+    echo "*** Success! ***"
+fi
+exit 0
