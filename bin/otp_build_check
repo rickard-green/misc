@@ -146,6 +146,7 @@ target=`$MAKE target_configured` || fail "Failed to determine target directory"
 
 unset TESTROOT
 unset RELEASE_ROOT
+unset ERL_LIBS
 
 progress "Building OTP in $ERL_TOP"
 $MAKE || fail "OTP build failed"
