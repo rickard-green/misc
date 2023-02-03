@@ -249,6 +249,26 @@ export PATH="$ERL_TOP/release/$target/bin:$PATH"
             fail "Failed to change directory into $test_dir/$dir"
         }
 
+        for mfile in *_data/Makefile.first; do
+
+            [ "$mfile" != '*_data/Makefile.first' ] || continue
+
+            ddir=`dirname $mfile` || fail "dirname on $test_dir/$dir/$mfile failed"
+
+            cd "$test_dir/$dir/$ddir" 2>&1 >/dev/null || {
+                fail "Failed to change directory into $test_dir/$dir/$ddir"
+            }
+
+            $MAKE -f Makefile.first || {
+                fail "Make of $test_dir/$dir/$ddir/Makefile.first failed"
+            }
+
+        done
+
+        cd "$test_dir/$dir" 2>&1 >/dev/null || {
+            fail "Failed to change directory into $test_dir/$dir"
+        }
+
         if [ -f Emakefile ]; then
             erl -noshell -eval 'case make:all() of error -> erlang:halt(1); _ -> init:stop() end.' || {
                 fail "Build of $dir failed"
