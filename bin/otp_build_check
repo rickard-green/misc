@@ -26,6 +26,7 @@
 docs=yes
 dialyzer=yes
 tests=all
+opt_only=no
 
 have_printf=no
 
@@ -39,22 +40,27 @@ print_error() {
 
 progress() {
     if [ $have_printf = yes ]; then
-	printf "\033[33m*** %s ***\033[0m\n" "$1" 1>&2
+	printf "\n\033[33m*** %s ***\033[0m\n\n" "$1" 1>&2
     else
-	echo "*** $1 ***" 1>&2
+	echo "\n*** $1 ***\n" 1>&2
     fi
 }
 
 print_usage() {
     echo "Usage:"
-    echo "  $0 [--help|-h] [--no-docs|-d] [--no-dialyzer|-y] [--no-tests|-n] [--tests|-t <App0> ... <AppN>]"
+    echo "  otp_build_check [--help|-h] [--only-opt|-o] [--no-docs|-d] \\"
+    echo "                  [--no-dialyzer|-y] [--no-tests|-n] \\"
+    echo "                  [--tests|-t <App0> ... <AppN>]"
     echo ""
     echo "By default:"
-    echo " * configure will not be run if it has already been run from the top"
-    echo " * all applications will be built"
-    echo " * dialyzer will be run on all applications"
-    echo " * all documentation will be built and checked"
-    echo " * all tests will be built"
+    echo " * Run configure unless it has already been run from the top"
+    echo " * Build all applications"
+    echo " * Debug compile (C-code in) all applications"
+    echo " * Run dialyzer on all applications"
+    echo " * Build all documentation"
+    echo " * Run xmllint on all documentation"
+    echo " * Run html link check on all documentation"
+    echo " * Build all tests"
 }
 
 usage () {
@@ -86,6 +92,8 @@ while [ $# -gt 0 ]; do
         --help|-h)
             print_usage
             exit 0;;
+        --only-opt|-o)
+            opt_only=yes;;
         --no-docs|-d)
             docs=no;;
         --no-dialyzer|-y)
@@ -118,8 +126,10 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+[ -f "$ERL_TOP/make/configure" ] || ./otp_build autoconf || fail "Autoconf failed"
+
 [ -f "$ERL_TOP/make/config.status" ] || {
-    ./configure || exit 1
+    ./configure || fail "configure failed"
 }
 
 type gmake >/dev/null 2>&1
@@ -138,15 +148,23 @@ unset TESTROOT
 unset RELEASE_ROOT
 
 progress "Building OTP in $ERL_TOP"
-$MAKE || exit 1
-$ERL_TOP/bin/cerl -eval "erlang:halt()" || exit 1
+$MAKE || fail "OTP build failed"
+progress "Booting optimized runtime"
+$ERL_TOP/bin/cerl -eval "erlang:halt()" || {
+    fail "Failed to boot runtime"
+}
 
-progress "Building debug OTP in $ERL_TOP"
-$MAKE TYPE=debug || exit 1
-$ERL_TOP/bin/cerl -debug -eval "erlang:halt()" || exit 1
+[ $opt_only = yes ] || {
+    progress "Building debug OTP in $ERL_TOP"
+    $MAKE TYPE=debug || fail "OTP debug build failed"
+    progress "Booting debug runtime"
+    $ERL_TOP/bin/cerl -debug -eval "erlang:halt()" || {
+        fail "Failed to boot debug runtime"
+    }
+}
 
 progress "Releasing OTP"
-$MAKE release || exit 1
+$MAKE release || fail "Releasing OTP failed"
 
 cd "$ERL_TOP/release/$target" 2>&1 >/dev/null || {
     fail "Failed to change directory into release directory: $ERL_TOP/release/$target"
@@ -154,6 +172,11 @@ cd "$ERL_TOP/release/$target" 2>&1 >/dev/null || {
 
 progress "Installing OTP"
 ./Install -minimal `pwd` || fail "Failed to install release"
+
+progress "Booting optimized installed runtime"
+./bin/erl -eval "erlang:halt()" || {
+    fail "Failed to boot installed runtime"
+}
 
 cd "$ERL_TOP" 2>&1 >/dev/null || {
     fail "Failed to change directory into $ERL_TOP"
@@ -163,20 +186,20 @@ export PATH="$ERL_TOP/release/$target/bin:$PATH"
 
 [ $docs = no ] || {
     progress "Building OTP documentation"
-    $MAKE docs || exit 1
+    $MAKE docs || fail "Building documentation failed"
     progress "Releasing OTP documentation"
-    $MAKE release_docs || exit 1
+    $MAKE release_docs || fail "Releasing documentation failed"
     progress "Running xmllint on OTP documentation"
-    $MAKE xmllint || exit 1
+    $MAKE xmllint || fail "xmllint of documentation failed"
     progress "Running HTML check on OTP documentation"
     ./scripts/otp_html_check "$ERL_TOP/release/$target/" doc/index.html || {
-        exit 1
+        fail "HTML check of documentation failed"
     }
 }
 
 [ $dialyzer = no ] || {
     progress "Running dialyzer on OTP"
-    $MAKE dialyzer || exit 1
+    $MAKE dialyzer || fail "Dialyzing OTP failed"
 }
 
 [ "$tests" = none ] || {
@@ -186,7 +209,7 @@ export PATH="$ERL_TOP/release/$target/bin:$PATH"
     }
     if [ "$tests" = all ]; then
         progress "Releasing all OTP tests"
-        ./otp_build tests "$test_dir"
+        ./otp_build tests "$test_dir" || fail "Release of tests failed"
     else
         for tapp in $tests; do
             case $tapp in
@@ -205,7 +228,9 @@ export PATH="$ERL_TOP/release/$target/bin:$PATH"
                 fail "Failed to change directory into $tapp_dir"
             }
             progress "Releasing $tapp tests"
-            $MAKE "TESTROOT=$test_dir" release_tests
+            $MAKE "TESTROOT=$test_dir" release_tests || {
+                fail "Release of $tapp tests failed"
+            }
         done
 
     fi
@@ -225,9 +250,13 @@ export PATH="$ERL_TOP/release/$target/bin:$PATH"
         }
 
         if [ -f Emakefile ]; then
-            erl -noshell -eval 'case make:all() of error -> erlang:halt(1); _ -> init:stop() end.' || exit 1
+            erl -noshell -eval 'case make:all() of error -> erlang:halt(1); _ -> init:stop() end.' || {
+                fail "Build of $dir failed"
+            }
         else
-            erlc -I `erl -noshell -eval 'io:format("~ts",[code:lib_dir(common_test)]),init:stop()'`/include -I . *.erl || exit 1
+            erlc -I `erl -noshell -eval 'io:format("~ts",[code:lib_dir(common_test)]),init:stop()'`/include -I . *.erl || {
+                fail "Build of $dir failed"
+            }
         fi
 
     done
@@ -238,8 +267,8 @@ export PATH="$ERL_TOP/release/$target/bin:$PATH"
 }
 
 if [ $have_printf = yes ]; then
-    printf "\033[32m*** Success! ***\033[0m\n"
+    printf "\n\033[32m*** Success! ***\033[0m\n\n"
 else
-    echo "*** Success! ***"
+    echo "\n*** Success! ***\n"
 fi
 exit 0
