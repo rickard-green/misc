@@ -164,6 +164,9 @@ $ERL_TOP/bin/cerl -eval "erlang:halt()" || {
     }
 }
 
+progress "Checking C++ code formatting"
+$MAKE format-check
+
 progress "Releasing OTP"
 $MAKE release || fail "Releasing OTP failed"
 
