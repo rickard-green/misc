@@ -27,6 +27,7 @@ docs=yes
 dialyzer=yes
 tests=all
 opt_only=no
+format_check=yes
 
 have_printf=no
 
@@ -49,7 +50,7 @@ progress() {
 print_usage() {
     echo "Usage:"
     echo "  otp_build_check [--help|-h] [--only-opt|-o] [--no-docs|-d] \\"
-    echo "                  [--no-dialyzer|-y] [--no-tests|-n] \\"
+    echo "                  [--no-dialyzer|-y] [--no-tests|-n] [--no-format-check|-f]\\"
     echo "                  [--tests|-t <App0> ... <AppN>]"
     echo ""
     echo "By default:"
@@ -98,6 +99,8 @@ while [ $# -gt 0 ]; do
             docs=no;;
         --no-dialyzer|-y)
             dialyzer=no;;
+        --no-format-check|-f)
+            format_check=no;;
         --no-tests|-n)
             tests=none;;
         --tests|-t)
@@ -161,6 +164,17 @@ $ERL_TOP/bin/cerl -eval "erlang:halt()" || {
     progress "Booting debug runtime"
     $ERL_TOP/bin/cerl -debug -eval "erlang:halt()" || {
         fail "Failed to boot debug runtime"
+    }
+}
+
+[ $format_check = no ] || {
+    clang-format --help 2>&1 >/dev/null || {
+        fail "clang-format not installed. Use --no-format-check option to skip."
+    }
+
+    progress "Checking C & C++ code formatting"
+    $MAKE format-check || {
+        fail "Failed to format C & C++ code"
     }
 }
 
